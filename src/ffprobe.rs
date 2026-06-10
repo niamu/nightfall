@@ -1,5 +1,5 @@
 use serde_derive::{Deserialize, Serialize};
-use std::{path::Path, process::Command, str};
+use std::{path::Path, process::Command, str, time::Duration};
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct FFPWrapper {
@@ -9,8 +9,20 @@ pub struct FFPWrapper {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FFPStream {
+    chapters: Vec<Chapter>,
     streams: Vec<Stream>,
     format: Format,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Chapter {
+    pub id: i64,
+    pub time_base: String,
+    pub start: i64,
+    pub start_time: String,
+    pub end: i64,
+    pub end_time: String,
+    pub tags: Option<Tags>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,6 +89,19 @@ pub struct FFProbeCtx {
     ffprobe_bin: String,
 }
 
+fn format_timecode(nanos: i64) -> String {
+    let d = Duration::from_nanos(nanos as u64);
+
+    let total_secs = d.as_secs();
+
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    let millis = d.subsec_millis();
+
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
 impl FFProbeCtx {
     pub fn new(ffprobe_bin: &'static str) -> Self {
         Self {
@@ -91,6 +116,7 @@ impl FFProbeCtx {
             .arg("quiet")
             .arg("-print_format")
             .arg("json")
+            .arg("-show_chapters")
             .arg("-show_streams")
             .arg("-show_format")
             .output()?;
@@ -109,5 +135,41 @@ impl FFProbeCtx {
         );
 
         Ok(de)
+    }
+
+    pub fn get_chapters_webvtt(&self, file: &Path) -> Result<String, std::io::Error> {
+        let chapters = self
+            .get_meta(&file)?
+            .ffpstream
+            .map(|s| s.chapters)
+            .unwrap_or_default();
+
+        let mut output = String::new();
+
+        if chapters.len() == 0 {
+            return Ok(output);
+        };
+
+        output.push_str("WEBVTT\n\n");
+
+        for (i, chapter) in chapters.iter().enumerate() {
+            let default_title = format!("Chapter {}", i + 1);
+
+            let title = chapter
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.title.as_deref())
+                .unwrap_or(&default_title);
+
+            output.push_str(&format!(
+                "{}\n{} --> {}\n{}\n\n",
+                i + 1,
+                format_timecode(chapter.start),
+                format_timecode(chapter.end),
+                title,
+            ));
+        }
+
+        Ok(output)
     }
 }
